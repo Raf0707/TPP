@@ -11,7 +11,7 @@ interface TelegramBotDao {
     suspend fun insert(bot: TelegramBotEntity): Long
 
     @Update
-    suspend fun update(bot: TelegramBotEntity)
+    suspend fun update(bot: TelegramBotEntity): Int
 
     @Delete
     suspend fun delete(bot: TelegramBotEntity)

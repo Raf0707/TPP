@@ -7,7 +7,8 @@ import javax.inject.Inject
 class UpdateBotUseCase @Inject constructor(
     private val repository: TelegramBotRepository
 ) {
-    suspend operator fun invoke(bot: TelegramBot) {
-        repository.update(bot)
+    suspend operator fun invoke(bot: TelegramBot): Boolean {
+        return repository.update(bot)
     }
 }
+

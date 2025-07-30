@@ -95,11 +95,15 @@ fun BotDetailsScreen(
     val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
 
+    var initialized by rememberSaveable { mutableStateOf(false) }
+
     val existingBot by viewModel.bot.collectAsState()
 
     // Загружаем данные бота, если редактируем
     LaunchedEffect(botId) {
-        if (botId != null) viewModel.loadBot(botId)
+        if (botId != null) {
+            viewModel.loadBot(botId)  // Загружаем данные существующего бота
+        }
     }
 
     // Общие состояния
@@ -201,6 +205,24 @@ fun BotDetailsScreen(
         }
     }
 
+    /*LaunchedEffect(botId) {
+        if (botId != null) {
+            viewModel.loadBot(botId)
+        } else {
+            if (existingBot == null) { // ✅ создаём только если нет бота
+                val newId = viewModel.createEmptyBotIfNeeded()
+                viewModel.loadBot(newId)
+            }
+        }
+    }*/
+
+
+    LaunchedEffect(botId) {
+        if (botId != null) {
+            viewModel.loadBot(botId)
+        }
+    }
+
     // Заполняем поля из существующего бота
     LaunchedEffect(existingBot) {
         existingBot?.let { bot ->
@@ -219,7 +241,29 @@ fun BotDetailsScreen(
         }
     }
 
-    // Сохраняем/обновляем бота
+
+
+    fun updateMyBot() {
+        val currentId = existingBot?.id ?: return // ⬅️ если нет id, не делаем update
+        val updatedBot = TelegramBot(
+            id = currentId,
+            botName = botName,
+            token = token,
+            selectedType = selectedType,
+            chatIds = chatIds.toList(),
+            sendMode = sendMode.name,
+            message = message,
+            delayMs = delayMs,
+            intervalMs = intervalMs,
+            durationSubMode = durationSubMode.name,
+            durationTotalTime = durationTotalTime.toIntOrNull() ?: 60,
+            durationSendCount = durationSendCount.toIntOrNull() ?: 3,
+            durationFixedInterval = durationFixedInterval.toIntOrNull() ?: 10
+        )
+        viewModel.updateBot(updatedBot)
+        viewModel.loadBot(currentId)
+    }
+
     fun saveBot() {
         val newBot = TelegramBot(
             id = existingBot?.id ?: 0L,
@@ -244,27 +288,7 @@ fun BotDetailsScreen(
         }
     }
 
-    fun updateMyBot() {
-        val newBot = TelegramBot(
-            id = existingBot?.id ?: 0L,
-            botName = botName,
-            token = token,
-            selectedType = selectedType,
-            chatIds = chatIds.toList(),
-            sendMode = sendMode.name,
-            message = message,
-            delayMs = delayMs,
-            intervalMs = intervalMs,
-            durationSubMode = durationSubMode.name,
-            durationTotalTime = durationTotalTime.toIntOrNull() ?: 60,
-            durationSendCount = durationSendCount.toIntOrNull() ?: 3,
-            durationFixedInterval = durationFixedInterval.toIntOrNull() ?: 10
-        )
 
-
-        viewModel.updateBot(newBot)
-
-    }
 
     Column(
         modifier = Modifier
@@ -281,6 +305,7 @@ fun BotDetailsScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             IconButton(onClick = {
+                //saveBot()
                 updateMyBot()
                 (context as? Activity)?.onBackPressed()
             }) {

@@ -10,6 +10,7 @@ import javax.inject.Inject
 
 class TelegramBotRepository @Inject constructor(
     private val dao: TelegramBotDao
+
 ) {
     fun getAllBots(): Flow<List<TelegramBot>> {
         return dao.getAllBots().map { list -> list.map { it.toDomain() } }
@@ -23,9 +24,10 @@ class TelegramBotRepository @Inject constructor(
         return dao.insert(bot.toEntity())
     }
 
-    suspend fun update(bot: TelegramBot) {
-        dao.update(bot.toEntity())
+    suspend fun update(bot: TelegramBot): Boolean {
+        return dao.update(bot.toEntity()) > 0
     }
+
 
     suspend fun delete(bot: TelegramBot) {
         dao.delete(bot.toEntity())

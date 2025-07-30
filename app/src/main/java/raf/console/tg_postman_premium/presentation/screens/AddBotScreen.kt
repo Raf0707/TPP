@@ -28,25 +28,28 @@ fun BotListScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 viewModel.createAndOpenBot { newBotId ->
-                    onBotClick(TelegramBot(
-                        id = 0L,
-                        botName = "",
-                        token = "",
-                        selectedType = "channel",
-                        chatIds = emptyList(),
-                        sendMode = "ONCE",
-                        message = "",
-                        delayMs = 0L,
-                        intervalMs = 0L,
-                        durationSubMode = "TIMES_PER_SECONDS",
-                        durationTotalTime = 60,
-                        durationSendCount = 1,
-                        durationFixedInterval = 10
-                    )) // или навигация
+                    onBotClick(
+                        TelegramBot(
+                            id = newBotId, // ✅ Передаём новый ID
+                            botName = "",
+                            token = "",
+                            selectedType = "channel",
+                            chatIds = emptyList(),
+                            sendMode = "ONCE",
+                            message = "",
+                            delayMs = 0L,
+                            intervalMs = 0L,
+                            durationSubMode = "TIMES_PER_SECONDS",
+                            durationTotalTime = 60,
+                            durationSendCount = 1,
+                            durationFixedInterval = 10
+                        )
+                    )
                 }
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Добавить бота")
             }
+
         },
         topBar = {
             CenterAlignedTopAppBar(title = { Text("Telegram Bots") })
