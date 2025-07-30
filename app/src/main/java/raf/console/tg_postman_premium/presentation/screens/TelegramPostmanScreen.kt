@@ -1,0 +1,1185 @@
+package raf.console.tg_postman_premium.presentation.screens
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.media.browse.MediaBrowser
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import raf.console.tg_postman_premium.ui.components.RadioButtonWithLabel
+import raf.console.tg_postman_premium.data.TelegramDataStore
+import raf.console.tg_postman_premium.data.TelegramSettings
+import raf.console.tg_postman_premium.service.TelegramBotService
+import android.net.Uri
+import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
+import raf.console.tg_postman_premium.data.ContactData
+import androidx.media3.common.MediaItem
+import raf.console.tg_postman_premium.ui.components.TimePickerField
+import raf.console.tg_postman_premium.presentation.screens.activity.GeoPickerActivity
+import raf.console.tg_postman_premium.presentation.screens.activity.MapPickerActivity
+import raf.console.tg_postman_premium.service.TelegramForegroundService
+import raf.console.tg_postman_premium.utils.compressVideoStandard
+
+
+enum class SendMode {
+    ONCE, MULTIPLE, DURATION
+}
+
+enum class DurationSubMode {
+    TIMES_PER_SECONDS, FIXED_INTERVAL
+}
+
+enum class TelegramMessageType(val label: String) {
+    TEXT("Текст"),
+    PHOTO("Фото"),
+    DOCUMENT("Документ"),
+    VIDEO("Видео"),
+    AUDIO("Аудио"),
+    CONTACT("Контакт"),
+    LOCATION("Геолокация")
+}
+
+enum class MapProvider {
+    GOOGLE,
+    YANDEX
+}
+
+@SuppressLint("Range")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TelegramPostmanScreen() {
+    val context = LocalContext.current
+    val dataStore = remember { TelegramDataStore(context) }
+    val coroutineScope = rememberCoroutineScope()
+    val botService = remember { TelegramBotService() }
+    val focusManager = LocalFocusManager.current
+
+    // Общие состояния
+    var botName by rememberSaveable { mutableStateOf("") }
+    var token by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf("") }
+    var selectedType by rememberSaveable { mutableStateOf("channel") }
+    val chatIds = remember { mutableStateListOf("") }
+    var status by remember { mutableStateOf("") }
+    var isSending by remember { mutableStateOf(false) }
+    var infoDialogText by remember { mutableStateOf<String?>(null) }
+
+    // Режимы отправки
+    var sendMode by rememberSaveable { mutableStateOf(SendMode.ONCE) }
+    var sendWithDelay by rememberSaveable { mutableStateOf(false) }
+    //var delaySeconds by rememberSaveable { mutableFloatStateOf(20f) }
+
+    var sendCount by rememberSaveable { mutableStateOf("3") }
+    var intervalSeconds by rememberSaveable { mutableFloatStateOf(20f) }
+
+    var durationSubMode by rememberSaveable { mutableStateOf(DurationSubMode.TIMES_PER_SECONDS) }
+    var durationTotalTime by rememberSaveable { mutableStateOf("60") }
+    var durationSendCount by rememberSaveable { mutableStateOf("3") }
+    var durationFixedInterval by rememberSaveable { mutableStateOf("10") }
+
+    var mediaUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        mediaUri = uri?.toString()
+    }
+
+    var messageType by rememberSaveable { mutableStateOf(TelegramMessageType.TEXT) }
+    val messageFieldEnabled = messageType.supportsCaption()
+    val geoPoint = rememberSaveable { mutableStateOf<Pair<Double, Double>?>(null) }
+
+    var selectedContact by rememberSaveable { mutableStateOf<Pair<String, String>?>(null) } // name to phone
+
+    val selectedImages = remember { mutableStateListOf<Uri>() }
+    val selectedVideos = remember { mutableStateListOf<Uri>() }
+    val selectedDocs = remember { mutableStateListOf<Uri>() }
+    val selectedAudios = remember { mutableStateListOf<Uri>() }
+    val multiContacts = remember { mutableStateListOf<Pair<String, String>>() }
+
+    var delayMs by rememberSaveable { mutableStateOf(0L) }
+    var intervalMs by rememberSaveable { mutableStateOf(0L) }
+
+
+    val contactPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickContact()
+    ) { uri: Uri? ->
+        uri?.let {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val nameIndex = it.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
+                    val idIndex = it.getColumnIndex(ContactsContract.Contacts._ID)
+                    val contactId = it.getString(idIndex)
+                    val name = it.getString(nameIndex)
+
+                    // Получаем номер телефона
+                    val phoneCursor = context.contentResolver.query(
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                        null,
+                        "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
+                        arrayOf(contactId),
+                        null
+                    )
+                    phoneCursor?.use { pc ->
+                        if (pc.moveToFirst()) {
+                            val phoneNumber = pc.getString(
+                                pc.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                            )
+                            selectedContact = name to phoneNumber
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val multiMediaUris = remember { mutableStateListOf<String>() }
+
+    // Добавляем состояние прогресса
+    var sentMessages by rememberSaveable { mutableStateOf(0) }
+    var totalMessages by rememberSaveable { mutableStateOf(0) }
+
+    // ==== Фото ====
+    /*val multiImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        selectedImages.clear()
+        selectedImages.addAll(uris)
+    }*/
+    val multiImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        multiMediaUris.clear()
+        multiMediaUris.addAll(uris.map { it.toString() })
+    }
+
+// ==== Видео ====
+    val multiVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        selectedVideos.clear()
+        selectedVideos.addAll(uris)
+    }
+
+// ==== Документы ====
+    val multiDocPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        selectedDocs.clear()
+        selectedDocs.addAll(uris)
+    }
+
+// ==== Аудио ====
+    val multiAudioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        selectedAudios.clear()
+        selectedAudios.addAll(uris)
+    }
+
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            contactPickerLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Разрешение на чтение контактов не предоставлено", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val multiContactPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickContact()
+    ) { contactUri ->
+        contactUri?.let {
+            val cursor = context.contentResolver.query(
+                it,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                ),
+                null,
+                null,
+                null
+            )
+            cursor?.use { c ->
+                val nameIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numberIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                if (c.moveToFirst()) {
+                    val name = c.getString(nameIndex) ?: "Без имени"
+                    val phone = c.getString(numberIndex) ?: ""
+                    // Добавляем в список (мультивыбор)
+                    multiContacts.add(name to phone)
+                }
+            }
+        }
+    }
+
+
+
+    var selectedMapProvider by rememberSaveable { mutableStateOf(MapProvider.YANDEX) }
+
+    val geoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val lat = result.data?.getDoubleExtra("latitude", 0.0)
+            val lon = result.data?.getDoubleExtra("longitude", 0.0)
+            if (lat != null && lon != null) {
+                geoPoint.value = lat to lon
+            }
+        }
+    }
+
+    val multiDocumentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        selectedDocs.clear()
+        selectedDocs.addAll(uris)
+    }
+
+
+
+    LaunchedEffect(Unit) {
+        dataStore.settingsFlow.collect { settings ->
+            botName = settings.botName
+            token = settings.token
+            selectedType = settings.selectedType
+            chatIds.clear()
+            chatIds.addAll(settings.chatIds)
+            sendMode = runCatching { SendMode.valueOf(settings.sendMode) }.getOrDefault(SendMode.ONCE)
+            message = settings.message
+            delayMs = settings.delayMs
+            intervalMs = settings.intervalMs
+        }
+    }
+
+    fun saveAll() {
+        coroutineScope.launch {
+            dataStore.saveSettings(
+                TelegramSettings(
+                    botName = botName,
+                    token = token,
+                    selectedType = selectedType,
+                    chatIds = chatIds.toList(),
+                    sendMode = sendMode.name,
+                    message = message,
+                    delayMs = delayMs,
+                    intervalMs = intervalMs
+                )
+            )
+        }
+    }
+
+    // Отдельное сохранение таймеров
+    fun saveDelay(ms: Long) {
+        delayMs = ms
+        coroutineScope.launch {
+            val current = TelegramSettings(
+                botName = botName,
+                token = token,
+                selectedType = selectedType,
+                chatIds = chatIds.toList(),
+                //sendOnce = sendMode == SendMode.ONCE,
+                sendMode = sendMode.name,
+                message = message,
+                delayMs = ms,
+                intervalMs = intervalMs
+            )
+            dataStore.saveSettings(current)
+        }
+    }
+
+    fun saveInterval(ms: Long) {
+        intervalMs = ms
+        coroutineScope.launch {
+            val current = TelegramSettings(
+                botName = botName,
+                token = token,
+                selectedType = selectedType,
+                chatIds = chatIds.toList(),
+                //sendOnce = sendMode == SendMode.ONCE,
+                sendMode = sendMode.name,
+                message = message,
+                delayMs = delayMs,
+                intervalMs = ms
+            )
+            dataStore.saveSettings(current)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) {
+                focusManager.clearFocus()
+            }
+            .padding(16.dp)
+    ) {
+        Text("Telegram Postman", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+
+        OutlinedTextField(
+            value = botName,
+            onValueChange = { botName = it; saveAll() },
+            label = { Text("Название бота") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = token,
+            onValueChange = { token = it; saveAll() },
+            label = { Text("Bot Token") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Тип назначения:", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(
+                selected = selectedType == "channel",
+                onClick = { selectedType = "channel"; saveAll() }
+            )
+            Text("Канал")
+            Spacer(Modifier.width(16.dp))
+            RadioButton(
+                selected = selectedType == "group",
+                onClick = { selectedType = "group"; saveAll() }
+            )
+            Text("Группа")
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Chat ID", style = MaterialTheme.typography.titleMedium)
+
+        chatIds.forEachIndexed { index, value ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = {
+                        chatIds[index] = it
+                        saveAll()
+                    },
+                    label = { Text("Chat ID ${index + 1}") },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(bottom = 8.dp)
+                )
+                if (chatIds.size > 1) {
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        chatIds.removeAt(index)
+                        saveAll()
+                    }) {
+                        Text("Удалить", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            FilledTonalButton(onClick = {
+                if (chatIds.size < 1000) {
+                    chatIds.add("")
+                    saveAll()
+                }
+            }) {
+                Text("Добавить")
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Режим отправки:", style = MaterialTheme.typography.titleMedium)
+
+        Spacer(Modifier.height(8.dp))
+
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+        ) {
+            // --- Отправить 1 раз ---
+            RadioButtonWithLabel(
+                selected = sendMode == SendMode.ONCE,
+                onClick = { sendMode = SendMode.ONCE; saveAll() },
+                label = "Отправить 1 раз"
+            )
+
+            /*if (sendMode == SendMode.ONCE) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = sendWithDelay,
+                        onCheckedChange = { sendWithDelay = it }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Включить таймер")
+                }
+
+                if (sendWithDelay) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Таймер отправки")
+                    Text("Задержка: ${delaySeconds.toInt()} секунд")
+                    Slider(
+                        value = delaySeconds,
+                        onValueChange = { delaySeconds = it; saveAll() },
+                        valueRange = 1f..180f,
+                        steps = 20
+                    )
+                }
+            }*/
+
+            if (sendMode == SendMode.ONCE) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = sendWithDelay, onCheckedChange = { sendWithDelay = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text("Включить таймер")
+                }
+                if (sendWithDelay) {
+                    Text("Таймер отправки")
+                    TimePickerField(
+                        label = "Задержка",
+                        type = "delay"
+                    ) { ms ->
+                        delayMs = ms
+                        //saveAll()
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // --- Отправить несколько раз ---
+            RadioButtonWithLabel(
+                selected = sendMode == SendMode.MULTIPLE,
+                onClick = { sendMode = SendMode.MULTIPLE; saveAll() },
+                label = "Отправить несколько раз"
+            )
+
+            if (sendMode == SendMode.MULTIPLE) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = sendCount,
+                    onValueChange = { sendCount = it },
+                    label = { Text("Количество раз") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("Частота отправки")
+                Text("Интервал: ${(intervalMs / 1000).toInt()} секунд")
+                /*Slider(
+                    value = intervalSeconds,
+                    onValueChange = { intervalSeconds = it },
+                    valueRange = 1f..180f,
+                    steps = 20
+                )*/
+                TimePickerField(
+                    label = "Интервал",
+                    type = "interval"
+                ) { ms ->
+                    intervalMs = ms
+                    //saveAll()
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = sendWithDelay,
+                        onCheckedChange = { sendWithDelay = it }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Включить таймер")
+                }
+
+                if (sendWithDelay) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Задержка: ${(delayMs / 1000).toInt()} секунд")
+                    /*Slider(
+                        value = delaySeconds,
+                        onValueChange = { delaySeconds = it },
+                        valueRange = 1f..180f,
+                        steps = 20
+                    )*/
+                    TimePickerField(
+                        label = "Задержка",
+                        type = "delay",
+                    ) { ms ->
+                        delayMs = ms
+                        //saveAll()
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // --- Отправлять в течение времени ---
+            RadioButtonWithLabel(
+                selected = sendMode == SendMode.DURATION,
+                onClick = { sendMode = SendMode.DURATION; saveAll() },
+                label = "Отправлять в течение времени"
+            )
+
+            if (sendMode == SendMode.DURATION) {
+                Spacer(Modifier.height(8.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    tonalElevation = 3.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        RadioButtonWithLabel(
+                            selected = durationSubMode == DurationSubMode.TIMES_PER_SECONDS,
+                            onClick = { durationSubMode = DurationSubMode.TIMES_PER_SECONDS },
+                            label = "Отправить N раз за K секунд"
+                        )
+                        RadioButtonWithLabel(
+                            selected = durationSubMode == DurationSubMode.FIXED_INTERVAL,
+                            onClick = { durationSubMode = DurationSubMode.FIXED_INTERVAL },
+                            label = "За K секунд с интервалом X"
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                if (durationSubMode == DurationSubMode.TIMES_PER_SECONDS) {
+                    Row {
+                        OutlinedTextField(
+                            value = durationSendCount,
+                            onValueChange = { durationSendCount = it },
+                            label = { Text("Количество (N)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = durationTotalTime,
+                            onValueChange = { durationTotalTime = it },
+                            label = { Text("Время (K)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    val l = runCatching {
+                        durationTotalTime.toInt() / durationSendCount.toInt()
+                    }.getOrNull()
+
+                    if (l != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Интервал: $l секунд")
+                    }
+                }
+
+                if (durationSubMode == DurationSubMode.FIXED_INTERVAL) {
+                    Row {
+                        OutlinedTextField(
+                            value = durationTotalTime,
+                            onValueChange = { durationTotalTime = it },
+                            label = { Text("Время (K)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = durationFixedInterval,
+                            onValueChange = { durationFixedInterval = it },
+                            label = { Text("Интервал (X)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    val times = runCatching {
+                        durationTotalTime.toInt() / durationFixedInterval.toInt()
+                    }.getOrNull()
+
+                    if (times != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Будет отправлено: $times сообщений")
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        val messageFieldEnabled = messageType.supportsCaption()
+
+        OutlinedTextField(
+            value = message,
+            onValueChange = {
+                if (messageFieldEnabled) {
+                    message = it
+                    saveAll()
+                }
+            },
+            label = { Text("Сообщение") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(140.dp),
+            enabled = messageFieldEnabled,
+            colors = OutlinedTextFieldDefaults.colors(
+                disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                disabledBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                disabledPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+            )
+        )
+
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Тип сообщения:")
+
+        Spacer(Modifier.height(12.dp))
+
+        when (messageType) {
+            TelegramMessageType.PHOTO -> {
+                Text("Фото", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { imagePickerLauncher.launch("image/*") }) {
+                            Text("Выбрать изображение")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (mediaUri != null) {
+                            TextButton(onClick = { mediaUri = null }) {
+                                Text("Удалить")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { multiImagePickerLauncher.launch("image/*") }) {
+                            Text("Выбрать несколько")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (multiMediaUris.isNotEmpty()) {
+                            TextButton(onClick = { multiMediaUris.clear() }) {
+                                Text("Удалить все")
+                            }
+                        }
+                    }
+
+                    // Превью выбранных изображений
+                    if (multiMediaUris.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        LazyRow {
+                            items(multiMediaUris) { uri ->
+                                AsyncImage(
+                                    model = uri,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(100.dp)
+                                        .padding(4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            TelegramMessageType.VIDEO -> {
+                Text("Видео", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { imagePickerLauncher.launch("video/*") }) {
+                            Text("Выбрать видео")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (mediaUri != null) {
+                            TextButton(onClick = { mediaUri = null }) {
+                                Text("Удалить")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Выбор нескольких аудиофайлов
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { Toast.makeText(context, "Отправьте несколько видео как документы! Telegram API ограничивает скорость и объем потоковой загрузки", Toast.LENGTH_SHORT).show() }) {
+                            Text("Выбрать несколько")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (selectedAudios.isNotEmpty()) {
+                            TextButton(onClick = { selectedAudios.clear() }) {
+                                Text("Удалить все")
+                            }
+                        }
+                    }
+
+//                    Row(verticalAlignment = Alignment.CenterVertically) {
+//                        OutlinedButton(onClick = { multiVideoPickerLauncher.launch(("video/*")) }) {
+//                            Text("Выбрать несколько")
+//                        }
+//                        Spacer(Modifier.width(16.dp))
+//                        if (selectedVideos.isNotEmpty()) {
+//                            TextButton(onClick = { selectedVideos.clear() }) {
+//                                Text("Удалить все")
+//                            }
+//                        }
+//                    }
+//
+//                    if (selectedVideos.isNotEmpty()) {
+//                        Spacer(Modifier.height(8.dp))
+//                        LazyRow {
+//                            items(selectedVideos) { uri ->
+//                                AndroidView(
+//                                    factory = { ctx ->
+//                                        PlayerView(ctx).apply {
+//                                            player = ExoPlayer.Builder(ctx).build().also {
+//                                                it.setMediaItem(MediaItem.fromUri(Uri.parse(uri.toString())))
+//                                                it.prepare()
+//                                                it.playWhenReady = false
+//                                            }
+//                                        }
+//                                    },
+//                                    modifier = Modifier
+//                                        .width(120.dp)
+//                                        .height(100.dp)
+//                                        .padding(4.dp)
+//                                )
+//                            }
+//                        }
+//                    }
+                }
+            }
+
+
+
+            TelegramMessageType.DOCUMENT -> {
+                Text("Документ", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { imagePickerLauncher.launch("*/*") }) {
+                            Text("Выбрать документ")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (mediaUri != null) {
+                            TextButton(onClick = { mediaUri = null }) {
+                                Text("Удалить")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { multiDocumentPickerLauncher.launch(arrayOf("*/*")) }) {
+                            Text("Выбрать несколько")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (selectedDocs.isNotEmpty()) {
+                            TextButton(onClick = { selectedDocs.clear() }) {
+                                Text("Удалить все")
+                            }
+                        }
+                    }
+
+                    if (selectedDocs.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 200.dp) // ограничиваем высоту, чтобы не было бесконечной
+                                .verticalScroll(rememberScrollState())
+                                .fillMaxWidth()
+                                .padding(4.dp)
+                                .border(1.dp, Color.Gray)
+                        ) {
+                            selectedDocs.forEach { uri: Uri ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp)
+                                        .border(1.dp, Color.LightGray)
+                                        .padding(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Info, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(uri.toString().substringAfterLast('/'))
+                                }
+                                Spacer(Modifier.height(4.dp))
+                            }
+                        }
+                    }
+
+                }
+            }
+
+
+            TelegramMessageType.AUDIO -> {
+                Text("Аудио", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Column {
+                    // Выбор одного аудиофайла
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { imagePickerLauncher.launch("audio/*") }) {
+                            Text("Выбрать аудио")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (mediaUri != null) {
+                            TextButton(onClick = { mediaUri = null }) {
+                                Text("Удалить")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Выбор нескольких аудиофайлов
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { Toast.makeText(context, "Отправьте несколько аудиофайлов как документы", Toast.LENGTH_SHORT).show() }) {
+                            Text("Выбрать несколько")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (selectedAudios.isNotEmpty()) {
+                            TextButton(onClick = { selectedAudios.clear() }) {
+                                Text("Удалить все")
+                            }
+                        }
+                    }
+
+                    // Отображение выбранных аудиофайлов
+                    if (selectedAudios.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn {
+                            items(selectedAudios) { uri ->
+                                val fileName = Uri.parse(uri.toString()).lastPathSegment ?: "Аудио"
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Info, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(fileName)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+
+
+            TelegramMessageType.CONTACT -> {
+                Text("Контакт", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Column {
+                    // Выбор одного контакта
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = {
+                            when (PackageManager.PERMISSION_GRANTED) {
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) -> {
+                                    contactPickerLauncher.launch(null)
+                                }
+                                else -> contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                            }
+                        }) {
+                            Text("Выбрать контакт")
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        if (selectedContact != null) {
+                            TextButton(onClick = { selectedContact = null }) {
+                                Text("Удалить")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Мультивыбор (накопительный)
+                    /*OutlinedButton(onClick = {
+                        when (PackageManager.PERMISSION_GRANTED) {
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) -> {
+                                contactPickerLauncher.launch(null) // повторный вызов → добавляем в multiContacts
+                            }
+                            else -> contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                        }
+                    }) {
+                        Text("Выбрать несколько")
+                    }
+
+                    // Отображение выбранных контактов
+                    if (multiContacts.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn {
+                            items(multiContacts) { (name, phone) ->
+                                Text("$name ($phone)")
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = { multiContacts.clear() }) {
+                            Text("Удалить всех")
+                        }
+                    }*/
+                }
+            }
+
+
+            TelegramMessageType.LOCATION -> {
+                Column {
+                    Text("Геопозиция", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+
+                    Button(onClick = {
+                        val intent = Intent(context, MapPickerActivity::class.java)
+                        geoPickerLauncher.launch(intent)
+                    }) {
+                        Text("Выбрать геопозицию")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    geoPoint.value?.let { (lat, lon) ->
+                        Text("Геопозиция: $lat, $lon", modifier = Modifier.padding(bottom = 8.dp))
+
+                        val staticMapUrl = when (selectedMapProvider) {
+                            MapProvider.GOOGLE -> "https://maps.googleapis.com/maps/api/staticmap?center=$lat,$lon&zoom=15&size=600x300&markers=color:red%7C$lat,$lon&key=YOUR_GOOGLE_API_KEY"
+                            MapProvider.YANDEX -> "https://static-maps.yandex.ru/1.x/?ll=$lon,$lat&z=15&size=600,300&l=map&pt=$lon,$lat,pm2rdm"
+                        }
+
+                        AsyncImage(
+                            model = staticMapUrl,
+                            contentDescription = "Превью геопозиции",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = { geoPoint.value = null }) {
+                            Text("Удалить геопозицию")
+                        }
+                    } ?: Text("Геопозиция не выбрана")
+                }
+            }
+
+
+            else -> Unit
+        }
+
+
+        TelegramMessageType.values().forEach { type ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(
+                    selected = messageType == type,
+                    onClick = { messageType = type }
+                )
+                Text(type.label)
+            }
+        }
+
+        //Spacer(Modifier.height(16.dp))
+
+        //Spacer(Modifier.height(24.dp))
+
+        // === Отображение выбранного медиа ===
+        //Spacer(Modifier.height(16.dp))
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(
+            onClick = {
+                if (token.isBlank() || message.isBlank()) {
+                    status = "❗ Заполните токен и сообщение"
+                    return@Button
+                }
+
+                val ids = chatIds.mapNotNull { raw ->
+                    val id = raw.trim()
+                    if (id.isBlank()) null
+                    else if (selectedType == "group" && !id.startsWith("-")) "-$id" else id
+                }
+
+                if (ids.isEmpty()) {
+                    status = "❗ Укажите хотя бы один Chat ID"
+                    return@Button
+                }
+
+                val intent = Intent(context, TelegramForegroundService::class.java).apply {
+                    putExtra("token", token)
+                    putExtra("chatIds", ArrayList(ids))
+                    putExtra("message", message)
+                    putExtra("sendMode", sendMode.name)
+
+                    // ✅ задержка только если включен чекбокс
+                    putExtra("delayMs", if (sendWithDelay) delayMs else 0L)
+
+                    putExtra("intervalMs", intervalMs)
+                    putExtra("repeatCount", sendCount.toIntOrNull() ?: 1)
+
+                    // Тип сообщения
+                    putExtra("messageType", messageType.name)
+
+                    // Медиа-файлы
+                    putStringArrayListExtra("multiMediaUris", ArrayList(multiMediaUris))
+                    putStringArrayListExtra("selectedDocs", ArrayList(selectedDocs.map { it.toString() }))
+                    putStringArrayListExtra("selectedVideos", ArrayList(selectedVideos.map { it.toString() }))
+                    putStringArrayListExtra("selectedAudios", ArrayList(selectedAudios.map { it.toString() }))
+                    mediaUri?.let { putExtra("mediaUri", it) }
+
+                    // Геолокация
+                    geoPoint.value?.let { (lat, lon) ->
+                        putExtra("latitude", lat)
+                        putExtra("longitude", lon)
+                    }
+
+                    // Контакт
+                    selectedContact?.let { (name, phone) ->
+                        putExtra("contactName", name)
+                        putExtra("contactPhone", phone)
+                    }
+
+                    // Режим отправки "в течение времени"
+                    putExtra("durationSubMode", durationSubMode.name)
+                    putExtra("durationTotalTime", durationTotalTime.toIntOrNull() ?: 60)
+                    putExtra("durationSendCount", durationSendCount.toIntOrNull() ?: 3)
+                    putExtra("durationFixedInterval", durationFixedInterval.toIntOrNull() ?: 10)
+                }
+
+                ContextCompat.startForegroundService(context, intent)
+
+                status = "📤 Рассылка запущена в фоне..."
+                isSending = true
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            enabled = !isSending
+        ) {
+            Text(text = if (isSending) "Отправка..." else "Отправить")
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        if (isSending) {
+            // ✅ Вычисляем отдельные значения
+            val messagesPerChat = sendCount.toIntOrNull() ?: 1
+            val chatCount = chatIds.size
+
+            Text(
+                text = "Отправка $messagesPerChat сообщений в $chatCount чатов",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+
+            LinearProgressIndicator(
+                progress = sentMessages.toFloat() / totalMessages.toFloat(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+
+
+        Spacer(Modifier.height(12.dp))
+
+        if (status.isNotBlank()) {
+            Text(status, color = MaterialTheme.colorScheme.error)
+        }
+
+        infoDialogText?.let { text ->
+            AlertDialog(
+                onDismissRequest = { infoDialogText = null },
+                confirmButton = {
+                    TextButton(onClick = { infoDialogText = null }) {
+                        Text("OK")
+                    }
+                },
+                title = { Text("Информация") },
+                text = { Text(text) }
+            )
+        }
+    }
+
+    DisposableEffect(Unit) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    "raf.console.tg_postman_premium.ACTION_SEND_COMPLETE" -> {
+                        val success = intent.getBooleanExtra("success", false)
+                        status = if (success) "✅ Сообщения успешно отправлены" else "⚠️ Ошибка отправки"
+                        isSending = false
+
+                        // ✅ Сбрасываем прогресс
+                        sentMessages = 0
+                        totalMessages = 0
+                    }
+                    "raf.console.tg_postman_premium.ACTION_SEND_PROGRESS" -> {
+                        sentMessages = intent.getIntExtra("sent", 0)
+                        totalMessages = intent.getIntExtra("total", 0)
+                        status = "📤 Отправлено $sentMessages / $totalMessages сообщений"
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction("raf.console.tg_postman_premium.ACTION_SEND_COMPLETE")
+            addAction("raf.console.tg_postman_premium.ACTION_SEND_PROGRESS")
+        }
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+
+
+
+}
+
+fun TelegramMessageType.supportsCaption(): Boolean {
+    return this == TelegramMessageType.TEXT ||
+            this == TelegramMessageType.PHOTO ||
+            this == TelegramMessageType.VIDEO ||
+            this == TelegramMessageType.DOCUMENT ||
+            this == TelegramMessageType.AUDIO
+}
+
