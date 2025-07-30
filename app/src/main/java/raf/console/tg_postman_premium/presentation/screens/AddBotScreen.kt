@@ -18,7 +18,7 @@ import raf.console.tg_postman_premium.presentation.viewmodel.TelegramBotViewMode
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BotListScreen(
-    onBotClick: (TelegramBot) -> Unit,
+    onBotClick: (Long) -> Unit,           // теперь только ID
     onAddBotClick: () -> Unit,
     viewModel: TelegramBotViewModel = hiltViewModel()
 ) {
@@ -28,28 +28,11 @@ fun BotListScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 viewModel.createAndOpenBot { newBotId ->
-                    onBotClick(
-                        TelegramBot(
-                            id = newBotId, // ✅ Передаём новый ID
-                            botName = "",
-                            token = "",
-                            selectedType = "channel",
-                            chatIds = emptyList(),
-                            sendMode = "ONCE",
-                            message = "",
-                            delayMs = 0L,
-                            intervalMs = 0L,
-                            durationSubMode = "TIMES_PER_SECONDS",
-                            durationTotalTime = 60,
-                            durationSendCount = 1,
-                            durationFixedInterval = 10
-                        )
-                    )
+                    onBotClick(newBotId)          // ✅ создаём и открываем по ID
                 }
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Добавить бота")
             }
-
         },
         topBar = {
             CenterAlignedTopAppBar(title = { Text("Telegram Bots") })
@@ -73,7 +56,7 @@ fun BotListScreen(
                     items(bots) { bot ->
                         BotItem(
                             bot = bot,
-                            onClick = { onBotClick(bot) },
+                            onClick = { onBotClick(bot.id) },  // ✅ открываем существующего по ID
                             onDelete = { viewModel.deleteBot(bot) }
                         )
                     }
@@ -82,6 +65,8 @@ fun BotListScreen(
         }
     }
 }
+
+
 
 @Composable
 fun BotItem(

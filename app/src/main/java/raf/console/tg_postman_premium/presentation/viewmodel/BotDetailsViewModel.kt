@@ -29,9 +29,28 @@ class BotDetailsViewModel @Inject constructor(
     fun insertBot(bot: TelegramBot) {
         viewModelScope.launch {
             val insertedId = useCases.insertBot(bot)
-            _bot.value = bot.copy(id = insertedId)
+            _bot.value = bot.copy(id = insertedId)  // ✅ обновляем ID
         }
     }
+
+    fun insertOrUpdateBot(bot: TelegramBot) {
+        viewModelScope.launch {
+            if (bot.id == 0L) {
+                val id = useCases.insertBot(bot)
+                _bot.value = bot.copy(id = id)
+            } else {
+                val updated = useCases.updateBot(bot)
+                if (!updated) {
+                    val id = useCases.insertBot(bot)
+                    _bot.value = bot.copy(id = id)
+                } else {
+                    loadBot(bot.id)
+                }
+            }
+        }
+    }
+
+
 
     fun updateBot(bot: TelegramBot) {
         viewModelScope.launch {

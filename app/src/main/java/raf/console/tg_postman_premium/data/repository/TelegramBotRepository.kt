@@ -21,8 +21,9 @@ class TelegramBotRepository @Inject constructor(
     }
 
     suspend fun insert(bot: TelegramBot): Long {
-        return dao.insert(bot.toEntity())
+        return dao.insert(bot.copy(id = 0).toEntity())
     }
+
 
     suspend fun update(bot: TelegramBot): Boolean {
         return dao.update(bot.toEntity()) > 0

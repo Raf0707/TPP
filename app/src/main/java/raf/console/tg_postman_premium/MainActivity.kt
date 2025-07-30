@@ -18,7 +18,7 @@ import raf.console.tg_postman_premium.presentation.screens.BotListScreen
 import raf.console.tg_postman_premium.ui.bots.details.BotDetailsScreen
 import raf.console.tg_postman_premium.ui.theme.TelegramPostmanTheme
 
-@AndroidEntryPoint
+/*@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,4 +56,45 @@ fun AppNavigation() {
             BotDetailsScreen()
         }
     }
+}*/
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    @OptIn(ExperimentalMaterial3Api::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            TelegramPostmanTheme {
+                AppNavigation()
+            }
+        }
+    }
 }
+
+@Composable
+fun AppNavigation() {
+    val navController = rememberNavController()
+
+    NavHost(navController = navController, startDestination = "bot_list") {
+        composable("bot_list") {
+            BotListScreen(
+                onBotClick = { botId ->           // ✅ теперь передаём только ID
+                    navController.navigate("bot_detail/$botId")
+                },
+                onAddBotClick = {
+                    navController.navigate("bot_detail/0") // 0 = новый бот
+                }
+            )
+        }
+
+        composable(
+            route = "bot_detail/{botId}",
+            arguments = listOf(navArgument("botId") { type = NavType.LongType })
+        ) { backStackEntry ->
+            val botId = backStackEntry.arguments?.getLong("botId") ?: 0L
+            BotDetailsScreen(botId = botId)       // ✅ передаём ID в экран
+        }
+    }
+}
+
